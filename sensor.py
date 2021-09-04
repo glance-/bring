@@ -1,4 +1,4 @@
-"""Track packages from postnord via api"""
+"""Track packages from Bring via api"""
 from urllib.parse import urlparse
 import json
 import logging
@@ -24,24 +24,15 @@ from homeassistant.helpers.entity_component import EntityComponent
 
 _LOGGER = logging.getLogger(__name__)
 
-DOMAIN = "postnord"
+DOMAIN = "bring"
 
-REGISTRATIONS_FILE = "postnord.conf"
+REGISTRATIONS_FILE = "bring.conf"
 
 SERVICE_REGISTER = "register"
 SERVICE_UNREGISTER = "unregister"
 
-# Get at https://developer.postnord.com/
-ATTR_API_KEY = "api_key"
-
 ICON = "mdi:package-variant-closed"
 SCAN_INTERVAL = timedelta(seconds=1800)
-
-PLATFORM_SCHEMA = PLATFORM_SCHEMA.extend(
-    {
-        vol.Required(ATTR_API_KEY): cv.string,
-    }
-)
 
 ATTR_PACKAGE_ID = "package_id"
 
@@ -53,11 +44,11 @@ SUBSCRIPTION_SCHEMA = vol.All(
 
 ENTITY_ID_FORMAT = DOMAIN + ".{}"
 
-POSTNORD_API_findByIdentifier_URL = "https://api2.postnord.com/rest/shipment/v2/trackandtrace/findByIdentifier.json?apikey={}&id={}"
+BRING_API_V2_tracking_URL = "https://tracking.bring.com/api/v2/tracking.json?q={}"
 
 
 async def async_setup_platform(hass, config, async_add_entities, discovery_info=None):
-    """Setup the postnord sensor"""
+    """Setup the Bring sensor"""
     component = hass.data.get(DOMAIN)
 
     # Use the EntityComponent to track all packages, and create a group of them
@@ -69,8 +60,6 @@ async def async_setup_platform(hass, config, async_add_entities, discovery_info=
     json_path = hass.config.path(REGISTRATIONS_FILE)
 
     registrations = _load_config(json_path)
-
-    api_key = config.get(ATTR_API_KEY)
 
     async def async_service_register(service):
         """Handle package registration."""
@@ -84,7 +73,7 @@ async def async_setup_platform(hass, config, async_add_entities, discovery_info=
         await hass.async_add_job(save_json, json_path, registrations)
 
         return await component.async_add_entities([
-            PostnordSensor(hass, package_id, api_key, update_interval)])
+            BringSensor(hass, package_id, update_interval)])
 
     hass.services.async_register(
         DOMAIN,
@@ -115,7 +104,7 @@ async def async_setup_platform(hass, config, async_add_entities, discovery_info=
     if registrations is None:
         return None
 
-    return await component.async_add_entities([PostnordSensor(hass, package_id, api_key, update_interval) for package_id in registrations], False)
+    return await component.async_add_entities([BringSensor(hass, package_id, update_interval) for package_id in registrations], False)
 
 
 def _load_config(filename):
@@ -127,14 +116,13 @@ def _load_config(filename):
     return []
 
 
-class PostnordSensor(RestoreEntity):
-    """Postnord Sensor."""
+class BringSensor(RestoreEntity):
+    """Bring Sensor."""
 
-    def __init__(self, hass, package_id, api_key, update_interval):
+    def __init__(self, hass, package_id, update_interval):
         """Initialize the sensor."""
         self.hass = hass
         self._package_id = package_id
-        self._api_key = api_key
         self._attributes = None
         self._state = None
         self._data = None
@@ -167,7 +155,7 @@ class PostnordSensor(RestoreEntity):
 
     def _update(self):
         """Update sensor state."""
-        response = requests.get(POSTNORD_API_findByIdentifier_URL.format(self._api_key,
+        response = requests.get(BRING_API_V2_tracking_URL.format(
             self._package_id), timeout=10)
 
         if response.status_code != 200:
@@ -176,48 +164,31 @@ class PostnordSensor(RestoreEntity):
 
         response = response.json()
 
-        if "TrackingInformationResponse" not in response or "shipments" not in response["TrackingInformationResponse"]:
+        if "consignmentSet" not in response:
             _LOGGER.error("API returned unknown json structure")
             return
 
-        for shipment in response["TrackingInformationResponse"]["shipments"]:
-            if shipment["shipmentId"] == self._package_id:
+        for shipment in response["consignmentSet"]:
+            if shipment["consignmentId"] == self._package_id:
                 # Found the right shipment
                 self._state = shipment.get("status", STATE_UNKNOWN)
                 self._attributes = {}
-                self._attributes["from"] = shipment.get("consignor", {}).get("name", STATE_UNKNOWN)
-                self._attributes["status"] = shipment.get("statusText", {}).get("header", STATE_UNKNOWN)
-                self._attributes["type"] = shipment.get("service", {}).get("name", STATE_UNKNOWN)
-                self._attributes["estimatedTimeOfArrival"] = shipment.get("estimatedTimeOfArrival", STATE_UNKNOWN)
+                self._attributes["from"] = shipment.get("senderName", STATE_UNKNOWN)
+                self._attributes["senderReference"] = shipment.get("senderReference", STATE_UNKNOWN)
 
-                # Flag where it is, if known
-                if 'deliveryPoint' in shipment:
-                    if 'coordinate' in shipment['deliveryPoint']:
-                        if len(shipment['deliveryPoint']['coordinate']) > 0:
-                            self._attributes['latitude'] = shipment['deliveryPoint']['coordinate'][0]['northing']
-                            self._attributes['longitude'] = shipment['deliveryPoint']['coordinate'][0]['easting']
+                # Blindly assume that the packageSet only contains one packet
+                packet = shipment.get("packageSet", [{}])[0]
+                self._attributes["packetSet_size"] = len(shipment.get("packageSet", []))
+                self._attributes["packageNumber"] = packet.get("packageNumber",
+                    STATE_UNKNOWN)
+                self._attributes["dateOfEstimatedDelivery"] = packet.get("dateOfEstimatedDelivery", STATE_UNKNOWN)
 
-                # find it under items
-                for item in shipment.get("items", []):
-                    if item.get("itemId", "") != self._package_id:
-                        continue
-                    for attr in ["dropOffDate", "returnDate"]:
-                        if attr in item:
-                            self._attributes[attr] = item[attr]
+                event = packet.get("eventSet", [{}])[0]
+                self._state = event.get("status", STATE_UNKNOWN)
+                self._attributes["dateIso"] = event.get("dateIso", STATE_UNKNOWN)
 
-                    try:
-                        for event in item.get("events", []):
-                            # find the last event and publish that status
-                            # Ignoring INFORMED events and such
-                            if event["status"] not in ["EN_ROUTE",
-                                    "AVAILABLE_FOR_DELIVERY"]:
-                                continue
-                            self._attributes["location"] = event["location"]["displayName"]
-                            self._attributes["locationType"] = event["location"]["locationType"]
-                    except:
-                        pass
             else:
-                _LOGGER.info("Found other shipmentId {}".format(shipment["shipmentId"]))
+                _LOGGER.info("Found other consignmentId {}".format(shipment["consignmentId"]))
 
     async def async_added_to_hass(self):
         """Run when entity about to be added to hass."""

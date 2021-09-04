@@ -1,6 +1,7 @@
 {
-  "domain": "postnord",
-  "name": "Postnord",
+  "version": 0,
+  "domain": "bring",
+  "name": "Bring",
   "documentation": "Not yet",
   "requirements": [],
   "dependencies": [],

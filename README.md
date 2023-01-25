@@ -30,9 +30,10 @@ card to view them all as a list in lovelace:
 ```
 
 This component shares quite a bit of code and architecture
-with my package tracker for Postnord[2] and DHL[3].
+with my package tracker for Postnord[2], DHL[3] and DbSchenker[4].
 
 
 1. https://github.com/thomasloven/lovelace-auto-entities
 2. https://github.com/glance-/postnord
-2. https://github.com/glance-/dhl
+3. https://github.com/glance-/dhl
+4. https://github.com/glance-/dbschenker

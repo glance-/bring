@@ -186,6 +186,7 @@ class BringSensor(RestoreEntity):
                 event = packet.get("eventSet", [{}])[0]
                 self._state = event.get("status", STATE_UNKNOWN)
                 self._attributes["dateIso"] = event.get("dateIso", STATE_UNKNOWN)
+                self._attributes["city"] = event.get("city", STATE_UNKNOWN)
 
             else:
                 _LOGGER.info("Found other consignmentId {}".format(shipment["consignmentId"]))
